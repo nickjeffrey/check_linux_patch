@@ -6,6 +6,7 @@
 # CHANGE LOG
 # ----------
 # 2023-05-10	njeffrey	Script created
+# 2023-10-12	njeffrey	Bug fix, $days_since_patch could be rounded to -0 instead of 0
 
 
 # NOTES
@@ -334,6 +335,7 @@ sub get_last_patch_date {
        ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat("/var/cache/apt/pkgcache.bin"); #get last modification time in seconds since the epoch
       $last_patched_days = $epoch - $mtime;                               	#mtime is last file modification time in seconds since the epoch
       $last_patched_days = $last_patched_days/60/60/24;				#convert seconds to days
+      $last_patched_days = $last_patched_days*-1 if ($last_patched_days < 0);	#remove negative sign to avoid rounding to -0 instead of 0
       $last_patched_days = sprintf("%.0f", $last_patched_days); 		#truncate to 0 decimal places, closest day is good enough
       print "   last patched $last_patched_days days ago \n" if ($verbose eq "yes");
    }										#end of if block
