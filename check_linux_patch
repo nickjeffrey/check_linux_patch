@@ -7,6 +7,7 @@
 # ----------
 # 2023-05-10	njeffrey	Script created
 # 2023-10-12	njeffrey	Bug fix, $days_since_patch could be rounded to -0 instead of 0
+# 2024-07-17	njeffrey	Add detection for Centos Linux
 
 
 # NOTES
@@ -277,6 +278,7 @@ sub get_linux_distro {
    open (IN,"/etc/os-release") or die "Cannot open /etc/os-release for reading $! \n";                     #open filehandle 
    while (<IN>) {                                       #read a line from filehandle
       s/\"//g;                                                                  #get rid of embedded quotation marks to make the regex simpler
+      $linux_version = $1 if ( /PRETTY_NAME=(CentOS Linux [0-9]+)/ );
       $linux_version = $1 if ( /PRETTY_NAME=(CentOS Stream [0-9]+)/ );
       $linux_version = $1 if ( /PRETTY_NAME=(Ubuntu .*)/ );
       $linux_version = $1 if ( /PRETTY_NAME=(Debian .*)/ );
