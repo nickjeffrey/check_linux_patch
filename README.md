@@ -13,6 +13,7 @@ Linux patch level OK - CentOS9 was last patched 2 days ago on 2025-01-15. Availa
 ````
 Linux patch level OK - Ubuntu22.04LTS was last patched 0 days ago on --. Available updates:283 updates:115 security_updates:168 | linux_version=Ubuntu22.04LTS;;;; days_since_patch=0;;;; available_updates=283;;;;
 ````
+````
 Linux patch level WARN - RHEL subscription state is unknown, cannot query upstream repos for available patches.  | linux_version=RHEL8.5;;;; days_since_patch=1;;;; available_updates=0;;;;
 ```
 ```
