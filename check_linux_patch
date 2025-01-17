@@ -2,18 +2,25 @@
 
 # nagios check to return the last date a Linux host was patched, as well as current release
 
+# OUTSTANDING TASKS
+# -----------------
+# Check on RHEL machine with expired subscription
+# Check on machine without internet access to upstream repos
+# Add a subroutine for apt-based distros
+# Figure out how to deal with this warning: Not root, Subscription Management repositories not updated
+# Add notifications if major OS version is EOL
+
 
 # CHANGE LOG
 # ----------
 # 2023-05-10	njeffrey	Script created
 # 2023-10-12	njeffrey	Bug fix, $days_since_patch could be rounded to -0 instead of 0
 # 2024-07-17	njeffrey	Add detection for Centos Linux
+# 2025-01-15	njeffrey	Add subroutine to generate report showing list of available security fixes
 
 
 # NOTES
 # -----
-#
-
 #
 #  This script is executed remotely on a monitored system by the NRPE or check_by_ssh methods available in nagios.
 #
@@ -61,7 +68,7 @@ my ($last_patched_days);
 my ($verbose,$common_output_data,$warn_output_data,$crit_output_data,$perf_data);
 my ($epoch,$dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
 my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
-
+my ($yum,$apt,$available_updates,%updates,$rhel_subscription);
 
 
 $linux_version              = "unknown";
@@ -73,6 +80,7 @@ $common_output_data         = "";                       #initialize variable
 $warn_output_data           = "";                       #initialize variable
 $crit_output_data           = "";                       #initialize variable
 $perf_data                  = "";
+$available_updates          = 0;			#initialize counter variable
 $CHECK_NAME                 = "Linux patch level";
 #
 # Nagios return codes
@@ -127,7 +135,6 @@ sub get_options {
    if( defined( $opt_v ) ) {
       $verbose = "yes";
    }
-
 }                       #end of subroutine
 
 
@@ -138,7 +145,7 @@ sub sanity_checks {
    #
    print "running sanity_checks subroutine \n" if ($verbose eq "yes");
    #
-   # figure out where the df command is on this system (varies across UNIX flavors)
+   # figure out where assorted binaries are located (varies by distro)
    $uname = "unknown";
    $uname = "/bin/uname"      if ( -e "/bin/uname" );
    $uname = "/usr/bin/uname"  if ( -e "/usr/bin/uname" );
@@ -154,6 +161,8 @@ sub sanity_checks {
       print "ERROR: Cannot find /etc/os-release  \n";
       exit $CRITICAL;
    }
+   $yum = "/bin/yum"      if ( -e "/bin/yum" );
+   $apt = "/bin/apt"      if ( -e "/bin/apt" );
 }                                                       #end of subroutine
 
 
@@ -231,7 +240,7 @@ sub determine_os {
    open(IN,"$cmd |");                                                   #open filehandle using command output
    while (<IN>) {                                                       #read a line from the command output
       if (/AIX/) {
-         $os          = "AIX";          #figure out OS-specific parameters for ps command
+         $os          = "AIX";          				#figure out OS-specific parameters for ps command
       } elsif (/HP-UX/) {
          $os          = "HP-UX";
       } elsif (/Linux/) {
@@ -257,8 +266,8 @@ sub determine_os {
    unless ($os eq "Linux" ) {
       print "$CHECK_NAME CRITICAL - this check only runs on Linux, not compatible with $os \n";
       exit $CRITICAL;
-   }
-}                                               #end of subroutine
+   }									#end of unless block
+}            				                                #end of subroutine
 
 
 
@@ -369,7 +378,7 @@ sub get_last_patch_date {
             $mon = "12" if $mon eq "Dec";
             #
             # at this point we have the date in yyyymmdd hh:mm:ss format, now convert to seconds since epoch
-            $mtime = timelocal($sec,$min,$hour,$mday,$mon-1,$year);			#use the Time::Local core perl module to convert to seconds since epoch
+            $mtime = timelocal($sec,$min,$hour,$mday,$mon-1,$year);		#use the Time::Local core perl module to convert to seconds since epoch
             #print $mtime,"\n",scalar localtime $time;
             #
             #convert seconds to days
@@ -377,7 +386,6 @@ sub get_last_patch_date {
             $last_patched_days = $last_patched_days/60/60/24;			#convert seconds to days
             $last_patched_days = sprintf("%.0f", $last_patched_days); 		#truncate to 0 decimal places, closest day is good enough
             print "   last patched $last_patched_days days ago \n" if ($verbose eq "yes");
-
          }									#end of if block
       }										#end of while loop
       close IN;									#close filehandle
@@ -386,6 +394,298 @@ sub get_last_patch_date {
       $last_patched_days = 9999;						#should never get here
    }										#end of else block
 }                                               				#end of subroutine
+
+
+
+
+sub show_available_updates_centos {   
+   #
+   # CentOS does not tag updates as security/bugfix/feature updates, so there is no way to only install security updates on CentOS.
+   # So for CentOS machines, you simply have to "yum update" to get all updates.
+   #
+   print "running show_available_updates_centos subroutine \n" if ($verbose eq "yes");
+   #
+   # Sample command output:
+   #    centos9test:~# yum check-update
+   #    Last metadata expiration check: 0:13:08 ago on Wed 15 Jan 2025 01:51:26 PM.
+   #    NetworkManager.x86_64                    1:1.51.5-1.el9             baseos
+   #    NetworkManager-libnm.x86_64              1:1.51.5-1.el9             baseos
+   #    NetworkManager-team.x86_64               1:1.51.5-1.el9             baseos
+   #    device-mapper.x86_64                     9:1.02.202-4.el9           baseos
+   #    grub2-tools.x86_64          	         1:2.06-93.el9              @baseos
+   #    grub2-tools.x86_64                       1:2.06-93.el9              @baseos
+   #    rsyslog.x86_64                           8.2412.0-1.el9             appstream
+   #
+   #    Obsoleting Packages
+   #    grub2-tools.x86_64                       1:2.06-94.el9              baseos
+   #    grub2-tools.x86_64                       1:2.06-94.el9              baseos
+   #
+   #
+   #
+   return unless ($yum);							#exit subroutine if /bin/yum does not exist
+   return unless ($linux_version =~ /CentOS/);					#exit subroune unless this a CentOS machine
+   #
+   # confirm yum is executable by current user
+   if ( ! -x $yum ) {
+      print "ERROR: $yum is not executable by the current user \n";
+      exit $UNKNOWN;
+   }
+   #
+   # define temporary file used to cache the results for up to 24 hours 
+   my $update_report = "/tmp/updates_available.txt";
+   #
+   # delete temporary file if older than 1 day (-M returns the age of the file in days)
+   if ( (-e "$update_report") && (-M "$update_report" > 1) ) { 			#confirm file exists and check age
+      print "   deleting old copy of report file $update_report \n" if ($verbose eq "yes");
+      unlink "$update_report";                                     		#delete the file if it is too old
+   } 										#end of if block
+   #
+   # if the report file already exists, count the number lines to populate the $available_updates variable
+   if (-e "$update_report") { 					
+      open (IN,"$update_report") or die "Cannot open $update_report for reading: $! \n";
+      while (<IN>) {                           					#read a line from the command output
+         if (/[a-zA-Z0-9]/) {							#match anything
+            $available_updates++;						#increment counter variable
+         } 									#end of if block loop
+      } 									#end of while loop
+      close IN;									#close filehandle
+   }
+   #
+   # create report if it does not exist
+   if (! -e "$update_report") { 					
+      $cmd = "$yum check-update";						#CentOS-specific command because rolling release distro
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open (OUT,">$update_report") or die "Cannot open $update_report for writing: $! \n";
+      open(IN,"$cmd |");                                  			#open filehandle using command output
+      while (<IN>) {                           					#read a line from the command output
+         if (/Obsoleting Packages/) { last; } 					#break out of the while loop when this line is found
+         if (/[a-zA-Z0-9]/) {							#match anything
+            chomp;								#remove newline
+            next if (/Last metadata expiration check/);				#skip header line
+            s/^\s+//g; 								#strip leading spaces
+            s/\s+$//g;								#strip trailing spaces
+            s/ +/ /g;   							#replace multiple spaces with single space
+            print     "$_ \n" if ($verbose eq "yes");				#echo to STDOUT for debugging
+            print OUT "$_ \n";							#write to file
+            $available_updates++;						#increment counter variable
+         } 									#end of if block
+      } 									#end of while loop
+      close IN;									#close filehandle
+      close OUT;								#close filehandle
+   }										#end of if block
+   print "   available_updates:$available_updates \n" if ($verbose eq "yes");
+}                                               				#end of subroutine
+
+
+
+sub show_available_updates_yum {   
+   #
+   # this subroutine queries the upstream repos to generate a list of available security updates (used for planning and change management)
+   #
+   print "running show_available_updates_yum subroutine \n" if ($verbose eq "yes");
+   #
+   # Sample command output:
+   #   rhel:~# yum updateinfo list updates
+   #   Updating Subscription Management repositories.
+   #   Last metadata expiration check: 3:13:32 ago on Wed 15 Jan 2025 01:42:12 PM MST.
+   #   RHBA-2022:1549  bugfix         NetworkManager-1:1.32.10-5.el8_5.x86_64        <---- tagged as bugfix
+   #   RHEA-2022:1985  enhancement    NetworkManager-1:1.36.0-4.el8.x86_64           <---- tagged as feature enhancement
+   #   RHSA-2024:8922  Low/Sec.       bzip2-libs-1.0.6-27.el8_10.x86_64              <---- tagged as security fix, Low       priority
+   #   RHSA-2025:0288  Moderate/Sec.  NetworkManager-1:1.40.16-18.el8_10.x86_64      <---- tagged as security fix, Moderate  priority
+   #   RHSA-2023:3584  Important/Sec. c-ares-1.13.0-6.el8_8.2.x86_64                 <---- tagged as security fix, Important priority
+   #   RHSA-2023:35xx  Critical/Sec.  foobar-1.13.0-6.el8_8.2.x86_64                 <---- tagged as security fix, Critical  priority
+   #
+   #
+   #
+   return unless ($yum);							#exit subroutine if /bin/yum does not exist
+   return if     ($linux_version =~ /CentOS/);					#exit subroune if this a CentOS machine, handled in different subroutine
+   #
+   # confirm yum is executable by current user
+   if ( ! -x $yum ) {
+      print "ERROR: $yum is not executable by the current user \n";
+      exit $UNKNOWN;
+   }
+   #
+   if ($linux_version =~ /RHEL/) { 	
+      #
+      # If this is a RHEL machine, confirm active subscription for entitlement to updates
+      #
+      # Sample output on a RHEL8 box:
+      #    rhel8test~# yum repolist
+      #    Updating Subscription Management repositories.
+      #    repo id                                  repo name
+      #    codeready-builder-for-rhel-8-x86_64-rpms Red Hat CodeReady Linux Builder for RHEL 8 x86_64 (RPMs)
+      #    epel                                     Extra Packages for Enterprise Linux 8 - x86_64
+      #    rhel-8-for-x86_64-appstream-rpms         Red Hat Enterprise Linux 8 for x86_64 - AppStream (RPMs)
+      #    rhel-8-for-x86_64-baseos-rpms            Red Hat Enterprise Linux 8 for x86_64 - BaseOS (RPMs)
+      #
+      # Sample output on a RHEL9 box:
+      #    rhel9test~# yum repolist
+      #    rhel-9-for-x86_64-appstream-rpms         Red Hat Enterprise Linux 9 for x86_64 - AppStream (RPMs)
+      #    rhel-9-for-x86_64-baseos-rpms            Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)
+      #
+      #
+      $rhel_subscription = "unknown";						#initialize variable
+      $cmd = "$yum repolist";							#define command to be run
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open (IN,"$cmd |");                                                   	#open filehandle using command output
+      while (<IN>) {                                                       	#read a line from the command output
+         if (/Red Hat Enterprise Linux/) {					#match the RHEL repos
+            $rhel_subscription = "active";					#if we see repos with this text, the subscription is active
+         }									#end of if block
+      }										#end of while loop
+      close IN; 								#close filehandle
+      print "   RHEL subscription status: $rhel_subscription \n" if ($verbose eq "yes");
+   } 										#end of if block
+   # 
+   # 
+   # initialize hash elements to avoid undef errors
+   $updates{bugfix}             = 0;
+   $updates{enhancement}        = 0;
+   $updates{Security_Low}       = 0;
+   $updates{Security_Moderate}  = 0;
+   $updates{Security_Important} = 0;
+   $updates{Security_Critical}  = 0;
+   #
+   # define temporary file used to cache the results for up to 24 hours 
+   my $update_report = "/tmp/updates_available.txt";
+   #
+   # delete temporary file if older than 1 day (-M returns the age of the file in days)
+   if ( (-e "$update_report") && (-M "$update_report" > 1) ) { 			#confirm file exists and check age
+      print "   deleting old copy of report file $update_report \n" if ($verbose eq "yes");
+      unlink "$update_report";                                     		#delete the file if it is too old
+   } 										#end of if block
+   #
+   # if the report file already exists, count the number lines to populate the $available_updates variable
+   if (-e "$update_report") { 					
+      open (IN,"$update_report") or die "Cannot open $update_report for reading: $! \n";
+      while (<IN>) {                           					#read a line from the command output
+         if (/[a-zA-Z0-9]/) {							#match anything
+            $available_updates++;						#increment counter variable
+            $updates{bugfix}++             if (/ bugfix /);			#increment counter for specific type of update
+            $updates{enhancement}++        if (/ enhancement /);  		#increment counter for specific type of update
+            $updates{Security_Low}++       if (/ Low\/Sec/);			#increment counter for specific type of update
+            $updates{Security_Moderate}++  if (/ Moderate\/Sec/);		#increment counter for specific type of update
+            $updates{Security_Important}++ if (/ Important\/Sec/);		#increment counter for specific type of update
+            $updates{Security_Critical}++  if (/ Critical\/Sec/);		#increment counter for specific type of update
+         } 									#end of if block loop
+      } 									#end of while loop
+      close IN;									#close filehandle
+   }
+   #
+   # create report if it does not exist
+   if (! -e "$update_report") { 					
+      $cmd = "$yum updateinfo list updates";					#use this command for Linux distros that tag security fixes
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open (OUT,">$update_report") or die "Cannot open $update_report for writing: $! \n";
+      open (IN,"$cmd |");                                                   	#open filehandle using command output
+      while (<IN>) {                                                       	#read a line from the command output
+         if (/[a-zA-Z0-9]/) {							#match anything
+            chomp;								#remove newline
+            next if (/Last metadata expiration check/);				#skip header line
+            next if (/Not root, Subscription Management repositories not updated/);	#skip header line
+            next if (/This system is not registered with an entitlement server/);	#skip header line
+            print     "$_ \n" if ($verbose eq "yes");				#echo to STDOUT for debugging
+            print OUT "$_ \n";							#write to file
+            $available_updates++;						#increment counter variable
+            $updates{bugfix}++             if (/ bugfix /);			#increment counter for specific type of update
+            $updates{enhancement}++        if (/ enhancement /);  		#increment counter for specific type of update
+            $updates{Security_Low}++       if (/ Low\/Sec/);			#increment counter for specific type of update
+            $updates{Security_Moderate}++  if (/ Moderate\/Sec/);		#increment counter for specific type of update
+            $updates{Security_Important}++ if (/ Important\/Sec/);		#increment counter for specific type of update
+            $updates{Security_Critical}++  if (/ Critical\/Sec/);		#increment counter for specific type of update
+         } 									#end of if block
+      } 									#end of while loop
+      close IN;									#close filehandle
+      close OUT;								#close filehandle
+   }										#end of if block
+   print "   available_updates:$available_updates \n" if ($verbose eq "yes");
+}                                               				#end of subroutine
+
+
+sub show_available_updates_apt {   
+   #
+   # this subroutine queries the upstream repos to generate a list of available security updates (used for planning and change management)
+   #
+   print "running show_available_updates_apt subroutine \n" if ($verbose eq "yes");
+   #
+   # Sample command output:
+   #   ubuntu22:~$ apt list --upgradable
+   #      Listing... Done
+   #      systemd/jammy-updates 249.11-0ubuntu3.12 amd64 [upgradable from: 249.11-0ubuntu3]
+   #      tar/jammy-updates,jammy-security 1.34+dfsg-1ubuntu0.1.22.04.2 amd64 [upgradable from: 1.34+dfsg-1build3]
+   #      tcpdump/jammy-updates 4.99.1-3ubuntu0.2 amd64 [upgradable from: 4.99.1-3build2]
+   #      thermald/jammy-updates 2.4.9-1ubuntu0.4 amd64 [upgradable from: 2.4.9-1]
+   #      tmux/jammy-updates,jammy-security 3.2a-4ubuntu0.2 amd64 [upgradable from: 3.2a-4build1]
+   #
+   #   ubuntu24:~$ apt list --upgradable
+   #      Listing... Done
+   #      bind9-dnsutils/noble-updates 1:9.18.30-0ubuntu0.24.04.1 amd64 [upgradable from: 1:9.18.28-0ubuntu0.24.04.1]
+   #      firmware-sof-signed/noble-updates 2023.12.1-1ubuntu1.3 all [upgradable from: 2023.12.1-1ubuntu1.2]
+   #      grub-common/noble-updates 2.12-1ubuntu7.1 amd64 [upgradable from: 2.12-1ubuntu7]
+   #      netplan-generator/noble-updates 1.1.1-1~ubuntu24.04.1 amd64 [upgradable from: 1.0.1-1ubuntu2~24.04.1]
+   #      python3-distupgrade/noble-updates 1:24.04.23 all [upgradable from: 1:24.04.16]
+   #      ubuntu-release-upgrader-core/noble-updates 1:24.04.23 all [upgradable from: 1:24.04.16]
+   #
+   #
+   return unless ($apt);							#exit subroutine if /bin/apt does not exist
+   #
+   # confirm apt is executable by current user
+   if ( ! -x $apt ) {
+      print "ERROR: $apt is not executable by the current user \n";
+      exit $UNKNOWN;
+   }
+   #
+   # initialize hash elements to avoid undef errors
+   $updates{updates}  = 0;
+   $updates{security} = 0;
+   #
+   #
+   # define temporary file used to cache the results for up to 24 hours 
+   my $update_report = "/tmp/updates_available.txt";
+   #
+   # delete temporary file if older than 1 day (-M returns the age of the file in days)
+   if ( (-e "$update_report") && (-M "$update_report" > 1) ) { 			#confirm file exists and check age
+      print "   deleting old copy of report file $update_report \n" if ($verbose eq "yes");
+      unlink "$update_report";                                     		#delete the file if it is too old
+   } 										#end of if block
+   #
+   # if the report file already exists, count the number lines to populate the $available_updates variable
+   if (-e "$update_report") { 					
+      open (IN,"$update_report") or die "Cannot open $update_report for reading: $! \n";
+      while (<IN>) {                           					#read a line from the command output
+         if (/[a-zA-Z0-9]/) {							#match anything
+            $available_updates++;						#increment counter variable
+            $updates{updates}++             if (/\-updates /);			#increment counter for specific type of update
+            $updates{security}++            if (/\-security /);			#increment counter for specific type of update
+         } 									#end of if block loop
+      } 									#end of while loop
+      close IN;									#close filehandle
+   }
+   #
+   # create report if it does not exist
+   if (! -e "$update_report") { 					
+      $cmd = "$apt list --upgradable";						#show available updates
+      print "   running command: $cmd \n" if ($verbose eq "yes");
+      open (OUT,">$update_report") or die "Cannot open $update_report for writing: $! \n";
+      open (IN,"$cmd |");                                                   	#open filehandle using command output
+      while (<IN>) {                                                       	#read a line from the command output
+         if (/[a-zA-Z0-9]/) {							#match anything
+            chomp;								#remove newline
+            next if (/^Listing/);						#skip header line
+            print     "$_ \n" if ($verbose eq "yes");				#echo to STDOUT for debugging
+            print OUT "$_ \n";							#write to file
+            $available_updates++;						#increment counter variable
+            $updates{updates}++             if (/\-updates /);			#increment counter for specific type of update
+            $updates{security}++            if (/\-security /);			#increment counter for specific type of update
+         } 									#end of if block
+      } 									#end of while loop
+      close IN;									#close filehandle
+      close OUT;								#close filehandle
+   }										#end of if block
+   print "   available_updates:$available_updates \n" if ($verbose eq "yes");
+}                                               				#end of subroutine
+
 
 
 
@@ -406,12 +706,32 @@ sub print_output {
    # On the "label=value" section is required.  The warn|crit|min|max entries are optional.
    # You can have multiple items of perf data, just separate each section with a space
    # UOM is Units Of Measurement.    Can be s=seconds B=bytes MB=megabytes GB=gigabytes %=percent c=counter
-   $perf_data = "linux_version=$linux_version;;;; days_since_patch=$last_patched_days;;;;";
+   $perf_data = "linux_version=$linux_version;;;; days_since_patch=$last_patched_days;;;; available_updates=$available_updates;;;;";
    #
    #
    #
    # Much of the text of the output will be the same.  Put the common stuff in a variable so we can simplify the outputs
-   $common_output_data = "$linux_version was last patched $last_patched_days days ago on $year-$mon-$mday";
+   $common_output_data = "$linux_version was last patched $last_patched_days days ago on $year-$mon-$mday. Available updates:$available_updates";
+
+   # These are the types of updates available for RPM-based distros like RHEL, CentOS, Rocky, Alma, etc.
+   # If there are details available for type of updates (bugfix, enhancement, security), add those details to $common_output
+   if (exists $updates{bugfix})             { $common_output_data = "$common_output_data bugfix:$updates{bugfix}";                         }
+   if (exists $updates{enhancement})        { $common_output_data = "$common_output_data enhancement:$updates{enhancement}";               }
+   if (exists $updates{Security_Low})       { $common_output_data = "$common_output_data Security_Low:$updates{Security_Low}";             }
+   if (exists $updates{Security_Moderate})  { $common_output_data = "$common_output_data Security_Moderate:$updates{Security_Moderate}";   }
+   if (exists $updates{Security_Important}) { $common_output_data = "$common_output_data Security_Important:$updates{Security_Important}"; }
+   if (exists $updates{Security_Critical})  { $common_output_data = "$common_output_data Security_Critical:$updates{Security_Critical}";  }
+
+   # These are the types of updates available for APT-based distros like Debian, Ubuntu, etc.
+   # If there are details available for type of updates (bugfix, enhancement, security), add those details to $common_output
+   if (exists $updates{updates} )           { $common_output_data = "$common_output_data updates:$updates{updates}";                          }
+   if (exists $updates{security})           { $common_output_data = "$common_output_data security_updates:$updates{security}";                }
+
+   # If this is a RHEL machine, and the subscription has expired, there will be no way to check for available updates.
+   # Just add the info the $common_output_data for now, we will decide later if this qualifies as WARN or CRITICAL.
+   if ( ($linux_version =~ /RHEL/) && ($rhel_subscription ne "active") ) { 	
+      $common_output_data = "RHEL subscription state is $rhel_subscription, cannot query upstream repos for available patches. ";
+   }
 
    if( $last_patched_days > $critical_threshold ) {
       $output_message = "$CHECK_NAME CRITICAL - no patches applied for $last_patched_days days.  $common_output_data | $perf_data \n";
@@ -422,6 +742,13 @@ sub print_output {
 
    if( $last_patched_days > $warn_threshold ) {
       $output_message = "$CHECK_NAME WARN - no patches applied for $last_patched_days days.  $common_output_data | $perf_data \n";
+      print "$output_message";       #print output to screen
+      print_to_outputfile;           #call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      exit $WARN;
+   }
+   
+   if ( ($last_patched_days < $warn_threshold) && ($linux_version =~ /RHEL/) && ($rhel_subscription ne "active") ) {
+      $output_message = "$CHECK_NAME WARN - $common_output_data | $perf_data \n";
       print "$output_message";       #print output to screen
       print_to_outputfile;           #call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       exit $WARN;
@@ -456,5 +783,8 @@ check_for_output_file;
 determine_os;
 get_linux_distro;
 get_last_patch_date;
+show_available_updates_centos;	#CentOS is a rolling-release distro, does not tag updates as security/bugfix/etc
+show_available_updates_yum;	#Other distros using yum (RHEL, Rocky, Alma, Oracle, etc) do tag patches as security-only
+show_available_updates_apt;	#Debian, Ubuntu
 print_output;
 
